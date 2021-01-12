@@ -77,6 +77,10 @@ mysql> select * from trade_detail where CONVERT(traideid USING utf8mb4)=$L2.trad
 ```
 **字符集不同只是条件之一，连接过程中要求在被驱动表的索引字段上加函数操作，是导致对被驱动表做全表扫描的原因。**
 
+1. 当使用left join时，左表是驱动表，右表是被驱动表 
+2. 当使用right join时，右表时驱动表，左表是驱动表
+3. 当使用join时，mysql会选择数据量比较小的表作为驱动表，大表作为被驱动表
+
 作为对比：
 ```sql
 mysql> select l.operator from tradelog l, trade_detail d where d.tradeid=l.tradeid and d.id=4; # 两次查找都可以命中索引
@@ -86,6 +90,38 @@ mysql> select operator from tradelog where traideid =CONVERT($R4.tradeid.value U
 # 与之前不同的是，这里的 CONVERT 函数是加在参数里的
 
 ```
+
+
+# 19 为什么我只查一行的语句，也执行这么慢
+```sql
+mysql> CREATE TABLE `t` (  
+    `id`    int(11) NOT NULL,
+    `c`     int(11) DEFAULT NULL,
+    PRIMARY KEY (`id`)
+) ENGINE=InnoDB;
+```
+我们再往里插入十万条数据
+
+## 查询时间长时间不返回
+```sql
+mysql> select * from t where id=1;
+```
+
+{% asset_img 等MDL锁.png 等MDL锁 %}
+
+出现这个状态表示的是，现在有一个线程正在表上请求或者持有 MDL 写锁，把 ```select``` 语句 block 住了。
+
+有一个 ```flush table``` 命令被别的语句 block 住了，然后又 block 住了我们的 ```select``` 语句。
+## 查询慢
+> 坏查询不一定是慢查询
+
+```sql
+mysql> select * from t where id=1;                    # 慢
+mysql> select * from t where id=1 lock in share mode; # 快
+```
+
+带 lock in share mode 的 SQL 是当前读，因此会直接读到最后结果；而没有 share mode 的是一致读，要从最后的结果，依次执行 undo log，才能返回正确的结果。
+
 
 # 参考文献
 * [MySQL实战45讲](https://drive.google.com/drive/folders/168dQ754KYC9QFikDy6iTq0mKHWYJkz8p)
