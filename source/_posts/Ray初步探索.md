@@ -362,6 +362,9 @@ a3 = Counter.options(num_cpus=3, resources={"Custom3": 1}).remote()
 
 # Ray Cluster
 Ray 可以在单个机器上运行, 但是 Ray 真正的强大之处在于它可以在一个机器集群上运行.
+
+一个Ray集群包含了一个**head node**和一堆**worker node**。**head node**需要先启动，所有的**worker node**都会有**head node**的地址。
+
 ## Distributed Ray Overview
 ### 概念
 * **Ray Nodes**: 一个 Ray 集群包含一个 ```head node``` 和 一些 ```worker nodes```. 首先运行的是 ```head node```, 然后 ```worker node``` 会得到 ```head node``` 在集群中的地址. Ray 的集群可以自动扩容, 这意味着它可以根据当前的负载创建或者销毁实例.
@@ -369,7 +372,29 @@ Ray 可以在单个机器上运行, 但是 Ray 真正的强大之处在于它可
 * **Ray Cluster Launcher**: 这是一个可以自动提供机器并且发布一个多节点的 Ray 集群的工具.
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 # Ray Serve
+
 Ray Serve 是基于 Ray 构建的可伸缩模型服务库
 
 ## Ray Serve: Scalable and Programmable Serving
