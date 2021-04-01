@@ -2,6 +2,7 @@
 title: Ray初步探索
 date: 2020-12-02 10:36:24
 tags: Ray
+categories: Ray
 ---
 # Overview of Ray
 
@@ -86,284 +87,41 @@ ray.get(x_id) # "example"
 * [Modern Parallel and Distributed Python: A Quick Tutorial on Ray](https://towardsdatascience.com/modern-parallel-and-distributed-python-a-quick-tutorial-on-ray-99f8d70369b8)
 
 
-# Using Ray
-## Starting Ray
-* 什么是 Ray runtime (内存管理)
-  * Ray programs are able to parallelize and distribute by leveraging an underlying Ray runtime.
-  * The Ray runtime consists of multiple services/processes started in the background for communication, data transfer, scheduling, and more.
-  * The Ray runtime can be started on a laptop, a single server, or multiple servers.
-  
-## Using Actors
-一个 ```actor``` 实际上就是一个有状态的 ```worker```. 当一个新的 actor 被实例化，那么一个新的 worker 就诞生了，同时这个 actor 的 method 就被安排在那个特定的 worker 上。 actor 可以访问并修改那个 worker 的状态. 
 
-* Worker 和 Actor 的区别
-  * "Ray worker" 就是一个 Python ```进程```
-  * "Ray worker" 要么被用来运行多个 Ray task 或者开始时对应一个专门的 actor
 
 
-> Task: 当 Ray 在一台机器上运行的时候，会自动开始几个 ```Ray workers```. 他们被用来执行 ```task``` (类似一个进程池)
+# RAY CORE 
 
-> Actor: 一个 Ray Actor 也是一个 "Ray worker" 只不过是在 runtime 实例化的. 所有的 methods 都运行在同一个进程里，使用相同的资源. 与 ```Task``` 不同的是，运行 Ray Actor 的进程不会重复使用并且会在 Actor 被删除后终止.
 
 
-## AsyncIO / Concurrency for Actors
-Ray 提供了两种 concurrency 的办法 ```async execution``` 和 ```threading```. Python 的 ```Global Interpreter Lock (GIL)``` 只允许在某一时刻运行一个thread, 那么我们就无法实现真正意义上的 parallelism. 一些常见的库，比如 Numpy, Cython, Tensorflow, PyTorch 在调用 C/C++ 函数的时候会释放 GIL. 但是```async execution``` 和 ```threading```无法绕开 GIL.
+## Ray Core Walkthrough
 
 
-### AsyncIO for Actors
-* [Python 中 async 与 await 的用法](https://juejin.cn/post/6844904088677662728)
 
-```Python
-import ray
-import asyncio
-ray.init()
+## Using Ray
 
-@ray.remote
-class AsyncActor:
-    # multiple invocation of this method can be running in
-    # the event loop at the same time
-    async def run_concurrent(self):
-        print("started")
-        await asyncio.sleep(2) # concurrent workload here
-        print("finished")
+见
 
-actor = AsyncActor.remote()
 
-# regular ray.get
-ray.get([actor.run_concurrent.remote() for _ in range(4)])
 
-# async ray.get
-await actor.run_concurrent.remote()
-```
+## Configuring Ray
 
-### Threaded Actors
-有时候使用 asyncio 并不是一个理想的解决方案。比如你可能有一个method在进行大量的计算任务并阻塞了event loop, 且不能通过 ```await``` 去停止。这就对 Async Actor 的整体性能有影响，因为 Async Actor 在某一时刻只能执行一个任务并且依赖```await``` 去进行上下文切换。
 
-可以使用 ```max_concurrency``` Actor 来代替, 类似线程池。
 
-```Python
-@ray.remote
-class ThreadedActor:
-    def task_1(self): print("I'm running in a thread!")
-    def task_2(self): print("I'm running in another thread!")
+## Ray Dashboard
 
-a = ThreadedActor.options(max_concurrency=2).remote()
-ray.get([a.task_1.remote(), a.task_2.remote()])
-```
 
-每个 threaded actor 的 ```Invocation``` 都会在线程池中运行。线程池的大小是由 ```max_concurrency``` 控制的。
 
-## GPU Support
 
 
 
-## Serialization
-因为 Ray 进程不是内存空间共享的，数据在 ```workers``` 和 ```nodes``` 之间传输需要序列化和反序列化。Ray 使用 ```Plasma object store``` 高效的把对象传输给不同的 ```nodes``` 和 ```processes```.
 
-### Plasma Object Store
 
-**Plasma** 是一个基于 Apache Arrow 开发的内对象存储。所有的对象在 **Plasma object store** 中都是不可变的并且保存在共享内存中。
-
-每个 node 都有自己的 object store. 当数据存入 object store, 它不会自动的广播通知其他的 node. 数据一直保留在本地直到在别的 node 被别的 task 或者 actor 请求。
-
-### Overview
-Ray 使用 ```Pickle protocol version 5``` 作为序列化协议。
-
-## Memory Management 
-Ray 当中的内存管理
-
-{% asset_img Ray内存管理.png Ray内存管理 %}
-
-我们把 Ray 的内存分成两个部分: ```Ray system memory``` 和 ```Application memory```.
-* Ray system memory (这部分的内存是 Ray 内部在使用)
-  * Redis
-    * 存储在集群中的一系列 nodes 和 actors
-    * 存储这部分用到的内存很小
-  * Raylet
-    * C++ raylet 进程在每个 node 上运行所需要的空间
-    * 这部分不能够被控制，但是用到的内存空间也很小
-* Application memory (这部分内存是我们的应用在使用)
-  * Worker heap
-    * 应用所使用的的内存 (e.g., in Python code or TensorFlow)
-    * 需要用应用的 *resident set size* 减去 *shared memory usage* 来衡量。
-  * Object store memory
-    * 当应用通过 ```ray.put``` 创建对象并且返回的值来自 remote function
-  * Object store shared memory
-    * 当应用通过 ```ray.get``` 读取对象
-    * 如果一个对象已经存在在一个 node 中, 这将不会导致额外的内存分配。这样可以使得一些比较大的对象在各个 actors 和 tasks 中共享的更有效率。
-
-### Raylet 
-我们可以抽象一个相对简单的 Worker 和 GCS 的关系:
-
-{% asset_img Worker和GCS关系.png Worker和GCS关系 %}
-
-Raylet 在中间的作用非常关键，包含了以下重要内容
-* Node Manager
-  * 基于 boost::asio 的异步通信模块，主要是通信的连接和消息处理管理
-* Object Manager
-  * Object Store 的管理
-* gcs_client 或者 gcs server
-  * gcs_client 是连接 GCS 客户端。如果设置 RAY_GCS_SERVICE_ENABLED 为 true 的话，这个 Server 就是作为 GCS 启动
-
-
-#### Raylet 的启动过程
-
-{% asset_img Raylet的启动过程.png Raylet的启动过程 %}
-
-1. Raylet 的初始化，这里包含有很多参数。包括 Node Manager 和 gcs client 的初始化
-2. 注册 GCS 准备接收消息。一旦有消息进来，就进入 Node Manager 的 ProcessClientMessage 过程。(TODO ProcessClientMessage的通信模型)
-
-## Placement Groups (置放群组)
-**Placement Groups** 允许用户跨多个```nodes```原子性的保存一组资源.(i.e., gang scheduling). **Placement Groups** 可以被用不同的策略来调度打包 ```Ray tasks``` 和 ```actors```.
-
-> 这里的原子性意味着如果有一个 bundle 不适合当前所在的 node, 那么整个 Placement Group 都不会被创建.
-
-**Placement Groups** 有以下应用
-* Gang Scheduling: 
-* Maximizing data locality
-* Load balancing
-
-### 关键概念
-* **bundle** : 资源的集合
-  * 一个 bundle 必须适合一个在集群中的 node
-  * 然后 Bundles 会根据 ```placement group strategy``` 在集群中跨 nodes 放置
-* **placement group** : bundle 的集合
-  * 每一个 bundle 都被给予了一个在 placement group 的编号
-  * 然后 Bundles 会根据 ```placement group strategy``` 在集群中跨 nodes 放置
-  * 等 placement group 创建了后，```tasks``` 和 ```actors``` 可以根据 placement group 或者个人 bundles 来调度。
-
-### 策略类型
-* STRICT_PACK
-  * All bundles must be placed into a single node on the cluster.
-* PACK
-  * All provided bundles are packed onto a single node on a best-effort basis. If strict packing is not feasible (i.e., some bundles do not fit on the node), bundles can be placed onto other nodes nodes.
-* STRICT_SPREAD
-  * Each bundle must be scheduled in a separate node.
-* SPREAD
-  * Each bundle will be spread onto separate nodes on a best effort basis. If strict spreading is not feasible, bundles can be placed overlapping nodes.
-
-
-## Advanced Usage
-### Synchronization
-* Inter-process synchronization using FileLock
-```Python
-import ray
-from filelock import FileLock
-
-@ray.remote
-def write_to_file(text):
-    # Create a filelock object. Consider using an absolute path for the lock.
-    with FileLock("my_data.txt.lock"):
-        with open("my_data.txt","a") as f:
-            f.write(text)
-
-ray.init()
-ray.get([write_to_file.remote("hi there!\n") for i in range(3)])
-
-with open("my_data.txt") as f:
-    print(f.read())
-
-## Output is:
-
-# hi there!
-# hi there!
-# hi there!
-```
-[理解 Python 关键字 "with" 与上下文管理器](https://zhuanlan.zhihu.com/p/26487659)
-
-* Multi-node synchronization using SignalActor
-
-> 当你有多个 tasks 需要等待同一个条件的时候，你可以使用一个 ```SingnalActor``` 来调度。
-
-```Python
-# Also available via `from ray.test_utils import SignalActor`
-import ray
-import asyncio
-
-@ray.remote(num_cpus=0)
-class SignalActor:
-    def __init__(self):
-        self.ready_event = asyncio.Event()
-
-    def send(self, clear=False):
-        self.ready_event.set()
-        if clear:
-            self.ready_event.clear()
-
-    async def wait(self, should_wait=True):
-        if should_wait:
-            await self.ready_event.wait()
-
-@ray.remote
-def wait_and_go(signal):
-    ray.get(signal.wait.remote())
-
-    print("go!")
-
-ray.init()
-signal = SignalActor.remote()
-tasks = [wait_and_go.remote(signal) for _ in range(4)]
-print("ready...")
-# Tasks will all be waiting for the singals.
-print("set..")
-ray.get(signal.send.remote())
-
-# Tasks are unblocked.
-ray.get(tasks)
-
-##  Output is:
-# ready...
-# get set..
-
-# (pid=77366) go!
-# (pid=77372) go!
-# (pid=77367) go!
-# (pid=77358) go!
-```
-
-* Message passing using Ray Queue
-```Python
-import ray
-from ray.util.queue import Queue
-
-ray.init()
-# You can pass this object around to different tasks/actors
-queue = Queue(maxsize=100)
-
-@ray.remote
-def consumer(queue):
-    next_item = queue.get(block=True)
-    print(f"got work {next_item}")
-
-consumers = [consumer.remote(queue) for _ in range(2)]
-
-[queue.put(i) for i in range(10)]
-```
-
-* Dynamic Remote Parameters
-
-### Dynamic Custom Resources
-> 我们可以动态的去调整资源的需求或者返回在运行时调用```.option``` 返回 ```ray.remote``` 的值
-
-```Python
-@ray.remote(num_cpus=4)
-class Counter(object):
-    def __init__(self):
-        self.value = 0
-
-    def increment(self):
-        self.value += 1
-        return self.value
-
-a1 = Counter.options(num_cpus=1, resources={"Custom1": 1}).remote()
-a2 = Counter.options(num_cpus=2, resources={"Custom2": 1}).remote()
-a3 = Counter.options(num_cpus=3, resources={"Custom3": 1}).remote()
-```
 
 # Ray Cluster
-Ray 可以在单个机器上运行, 但是 Ray 真正的强大之处在于它可以在一个机器集群上运行.
+Ray 可以在单个机器上运行, 但是 Ray 真正的强大之处在于它可以在一个机器集群上运行。
 
-一个Ray集群包含了一个**head node**和一堆**worker node**。**head node**需要先启动，所有的**worker node**都会有**head node**的地址。
+
 
 ## Distributed Ray Overview
 ### 概念
@@ -373,6 +131,61 @@ Ray 可以在单个机器上运行, 但是 Ray 真正的强大之处在于它可
 
 
 
+一个Ray集群包含了一个**head node**和一堆**worker node**还有一个中心的全局控制储存实例（Global Control Store, **GCS**）。**head node**需要先启动，所有的**worker node**都会有**head node**的地址。
+
+
+
+系统的一些元数据由GCS管理，例如actor的地址。
+
+{% asset_img Ray集群.png Ray集群 %}
+
+
+
+我们可以使用**Ray Cluster Launcher**配置计算机并启动多节点Ray群集。可以在AWS、GCP、Azure、Kubernetes、内部部署和Staroid上使用集群启动器，甚至可以在您的自定义节点提供程序上使用。
+
+
+
+
+
+### 所有权关系
+
+{% asset_img 所有权关系.png 所有权关系 %}
+
+每个worker进程管理并拥有它提交的task以及task的返回（ObjectRef）。这个所有者对task是否执行以及ObjectRef对应的值是否能够被解析负责。worker拥有过它通过`ray.put`创造的object
+
+
+
+### 组件
+
+#### worker
+
+一个Ray实例包含了多个**worker nodes**。每个节点包含以下物理进程：
+
+* 一个或者多个work processes，负责task的提交和执行。
+* 一个所有权的对应表。记录 objects 和对应 worker 的引用计数(ref counts)
+* 一个进程内的存储。用于存储小的 object
+* Raylet ，Raylet 在同一个集群共享所有的 jobs 。raylet 有两个主要的线程：
+  * 调度线程。负责资源管理和在分布式对象存储里写入任务参数。集群里面的独立的调度都包含 Ray 的分布式调度
+  * 共享内存对象（plasma 对象存储）。负责存储和转换大的对象。集群里面每个对象存储都包含 Ray 分布式对象存储
+
+
+
+#### head
+
+区别于其他进程，head承担以下任务：
+
+* Global Control Store(GCS)。GCS是一个 key-value 的服务器，包含了系统级别的元数据，例如 objects 和 actors 的位置。有一个进行中的对 GCS 的优化，以便 GCS 可以运行在任意或者多个节点，而不是设定的 head 节点。
+* Driver进程。dirver 是一个特殊的 worker 进程（运行`ray.init()`的进程），它执行上层应用（例如，python 里的`__main__`）。它能够提交 tasks，但是自己本身不能执行。Driver 进程能够运行在任何 node 熵，但是默认是在 head node里。
+
+
+
+### 具体如何工作的
+
+Ray集群将自动启动一个基于负载的autoscaler。autoscaler资源要求scheduler查看集群中的挂起任务、参与者和放置组资源需求，并尝试添加能够满足这些需求的最小节点列表。当工作节点空闲超过一定时间时，它们将被删除（头节点永远不会被删除，除非集群被拆除）。
+
+
+
+Autoscaler使用一个简单的装箱算法将用户需求装箱到可用的集群资源中。剩余的未满足需求被放置在满足需求的最小节点列表上，同时最大化利用率（从最小节点开始）。
 
 
 
@@ -384,10 +197,9 @@ Ray 可以在单个机器上运行, 但是 Ray 真正的强大之处在于它可
 
 
 
+## 参考文献
 
-
-
-
+* [Ray 1.0架构解读](https://zhuanlan.zhihu.com/p/344736949)
 
 
 
