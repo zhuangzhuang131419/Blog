@@ -2,6 +2,7 @@
 title: k8s课堂笔记
 date: 2021-03-16 20:02:08
 tags: kubernetes
+categories: kubernetes
 ---
 
 # 第一部分 k8s基本概念

@@ -2,6 +2,7 @@
 title: Kubernetes介绍
 date: 2020-12-08 16:50:53
 tags: 分布式系统
+categories: kubernetes
 ---
 
 # 深入浅出地了解 Kubernetes
