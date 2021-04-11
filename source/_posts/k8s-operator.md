@@ -148,7 +148,7 @@ $ tree -L 3
 ├── Dockerfile # 用于构建 Operator 镜像
 ├── Makefile   # 构建时使用
 ├── PROJECT    # 项目配置
-├── api
+├── api        # 新增的api
 │   └── v1
 │       ├── apiexamplea_types.go
 │       ├── groupversion_info.go
@@ -203,8 +203,6 @@ $ tree -L 3
 
 15 directories, 40 files
 ```
-
-
 
 
 
@@ -343,4 +341,5 @@ metadata:
 
 * [从零开始入门 K8s | Kubernetes API 编程利器：Operator 和 Operator Framework](https://www.kubernetes.org.cn/6746.html)
 * [使用 kubebuilder 创建 operator 示例](https://jimmysong.io/kubernetes-handbook/develop/kubebuilder-example.html)
+* [The Kubebuilder Book](https://cloudnative.to/kubebuilder/introduction.html)
 
