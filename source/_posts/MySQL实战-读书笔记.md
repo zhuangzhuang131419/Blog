@@ -76,6 +76,10 @@ mysql> show processlist;
 
 
 
+如果表T中没有字段k，而执行了语句`select * from T where k=1`，会报错`Unknown column 'k' in 'where clause'`。这个错是在分析器这个阶段报出来的。
+
+
+
 ## 优化器
 
 在开始执行前，还需要经过优化器的处理。例如：决定使用哪个索引；在有多表关联的时候，决定各个表的连接顺序。
@@ -93,11 +97,8 @@ mysql> select * from t1 join t2 using(ID)  where t1.c=10 and t2.d=20;
 
 ## 执行器
 
-1. 开始执行前，首先判断一下是否有查询权限
-
-
-
-
+1. 开始执行前，首先判断一下是否有查询权限。（如果有触发器，得在执行器阶段才能确定）
+2. 如果有权限，就打开表继续执行。打开表的时候，执行器根据表的引擎定义，去使用这个引擎提供的接口。
 
 
 
@@ -106,6 +107,143 @@ mysql> select * from t1 join t2 using(ID)  where t1.c=10 and t2.d=20;
 一条查询语句的执行过程一般是经过连接器、分析器、优化器、执行器等功能模块，最后到达存储引擎。
 
 
+
+## redo log（重做日志）
+
+### WAL (Write-Ahead Logging)
+
+* **先写日志，再写磁盘**
+
+* 具体来说，当有一条记录需要更新的时候，InnoDB 引擎就会先把记录写到 redo log里面，并更新内存，这个时候更新就算完成了。同时，InnoDB 引擎会在适当的时候，将这个操作记录更新到磁盘里面，而这个更新往往是在系统比较空闲的时候做。
+* 只要事务提交成功，那么对数据库做的修改就被永久保存下来了，不可能因为任何原因再回到原来的状态。
+
+
+
+{% asset_img 02-redo log.jpg 02-redo log %}
+
+write pos 是当前记录的位置，一边写一边后移。checkpoint 是当前要擦除的位置，也是往后推移并且循环的，擦除记录前要把记录更新到数据文件。write pos 和 checkpoint 之间的部分，可以用来记录新的操作。如果 write pos 追上 checkpoint，这时候不能再执行新的更新，得停下来先擦掉一些记录，把 checkpoint 推进一下。
+
+
+
+## binlog（归档日志）
+
+> redo log是InnoDB引擎特有的日志，而Server层也有自己的日志，称为binlog
+
+* binlog和redo log的区别：
+
+  * redo log 是 InnoDB 引擎特有的；binlog 是 MySQL 的 Server 层实现的，所有引擎都可以使用。
+
+  * redo log 是物理日志，记录的是“在某个数据页上做了什么修改”；binlog 是逻辑日志，记录的是这个语句的原始逻辑，比如“给 ID=2 这一行的 c 字段加 1 ”。依靠binlog是没有`crash-safe`能力的。
+
+  * redo log 是循环写的，不持久保存，空间固定会用完，不具备binlog的归档功能；binlog 是可以追加写入的。“追加写”是指 binlog 文件写到一定大小后会切换到下一个，并不会覆盖以前的日志。
+
+  * `crash-safe`是崩溃恢复；binlog恢复是制造一个副本，只能恢复到上个版本。
+
+    
+
+binlog有两种模式：
+
+* statement格式记的是sql语句
+* row格式会记录行的内容，更新前和更新后都有
+
+
+
+
+
+## 更新流程
+
+{% asset_img 02-update语句执行流程.jpg 02-update语句执行流程 %}
+
+
+
+把redo log的写入拆成了两个步骤：prepare和commit。这就是两阶段提交。
+
+### 两阶段提交
+
+* 如果先写redo log后写binlog：
+  * 由于我们前面说过的，redo log 写完之后，系统即使崩溃，仍然能够把数据恢复回来，所以恢复后这一行 c 的值是 1。但是由于 binlog 没写完就 crash 了，这时候 binlog 里面就没有记录这个语句。因此，之后备份日志的时候，存起来的 binlog 里面就没有这条语句。然后你会发现，如果需要用这个 binlog 来恢复临时库的话，由于这个语句的 binlog 丢失，这个临时库就会少了这一次更新，恢复出来的这一行 c 的值就是 0，与原库的值不同。
+
+* 如果先写binlog再写redo log：
+  * 如果在 binlog 写完之后 crash，由于 redo log 还没写，崩溃恢复以后这个事务无效，所以这一行 c 的值是 0。但是 binlog 里面已经记录了“把 c 从 0 改成 1”这个日志。所以，在之后用 binlog 来恢复的时候就多了一个事务出来，恢复出来的这一行 c 的值就是 1，与原库的值不同。
+
+
+
+## 在两阶段提交的不同时刻，MySQL异常重启会出现什么现象
+
+* 在写入redo log处于prepare阶段之后、写binlog之前发生了崩溃
+
+  由于此时binlog还没写，rede log也还没提交，所以崩溃恢复的时候，这个事务会回滚。binlog还没写，所以也不会传到备库
+
+* 在binlog写完，redo log还没commit前发生crash
+
+  我们先来看一下崩溃恢复时的判断规则。
+
+  1. 如果 redo log 里面的事务是完整的，也就是已经有了 commit 标识，则直接提交；
+
+  2. 如果 redo log 里面的事务只有完整的 prepare，则判断对应的事务 binlog 是否存在并完整：
+
+     a. 如果是，则提交事务；
+
+     b. 否则，回滚事务。
+
+  这里我们对应的就是2(a)的情况
+
+
+
+Q: MySQL怎么知道binlog是完整的？
+
+A: 一个事务的binlog是有完整格式的：
+
+* statement格式的binlog，最后会有COMMIT
+* row格式的binlog，最后会有一个XID event
+* 在MySQL5.6.2版本后，还引入了binlog-checksum参数，用来验证binlog内容的正确性
+
+
+
+Q: redo log 和 binlog 是怎么关联起来的？
+
+A:它们有一个共同的数据字段，叫 XID。
+
+
+
+Q: 处于 prepare 阶段的 redo log 加上完整 binlog，重启就能恢复，MySQL 为什么要这么设计?
+
+A: 在binlog 写完以后 MySQL 发生崩溃，这时候 binlog 已经写入了，之后就会被从库（或者用这个 binlog 恢复出来的库）使用。所以，在主库上也要提交这个事务。采用这个策略，主库和备库的数据就保证了一致性。防止恢复时，主备数据库不一致。
+
+
+
+集群正常运行的前提：要有完整的binlog来保证从库的数据一致性。要有commit状态的redo log来保证主库的数据的一致性
+
+
+
+Q: 能不能只用binlog来支持崩溃恢复，又能支持归档
+
+{% asset_img 02-只用binlog支持崩溃恢复.jpg 02-只用binlog支持崩溃恢复 %}
+
+A: binlog是**逻辑日志**，没有记录数据页的更新细节，binlog没有能力恢复“数据页”。
+
+重启后，引擎内部事务 2 会回滚，然后应用 binlog2 可以补回来；但是对于事务 1 来说，系统已经认为提交完成了，不会再应用一次 binlog1。InnoDB 引擎使用的是 WAL 技术，执行事务的时候，写完内存和日志，事务就算完成了。如果之后崩溃，要依赖于日志来恢复数据页。在图中这个位置发生崩溃的话，事务1也是可能丢失了的，而且是数据页级的丢失。此时，binlog里面没有记录数据页的更新细节，无法补回来。
+
+
+
+
+
+Q: 能不能只用redo log，不要binlog
+
+A: 如果只考虑崩溃恢复的功能是可以的，但是binlog也有redo log无法代替的功能。
+
+* 归档。redo log是循环写，这样历史日志就无法保留
+* MySQL系统依赖于binlog
+
+
+
+
+
+
+
+
+
+# 03.事务隔离：为什么你改了我还看不见？
 
 
 
@@ -476,7 +614,14 @@ mysql> insert into t values(30, 10, 30);
 > 事务执行过程中，先把日志写到 binlog cache，事务提交的时候，再把 binlog cache 写到 binlog 文件中。
 
 
-TODO
+
+事务提交的时候，执行器把binlog 
+
+
+
+
+
+
 
 
 # 24 MySQL 是怎么保证主备一致的？
