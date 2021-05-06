@@ -237,6 +237,15 @@ A: 如果只考虑崩溃恢复的功能是可以的，但是binlog也有redo log
 
 
 
+Q: 数据写入后的最终落盘，是从redo log更新过来的还是从buffer pool更新过来的
+
+A: redo log并没有记录数据页的完整数据，所以它没有能力自己去更新磁盘数据页。
+
+* 如果是正常运行的实例的话，数据页被修改以后，跟磁盘的数据页不一致，称为脏页。最终数据落盘，就是把内存中的数据页写盘。这个过程，甚至与 redo log 毫无关系。
+* 在崩溃恢复场景中，InnoDB 如果判断到一个数据页可能在崩溃恢复的时候丢失了更新，就会将它读到内存，然后让 redo log 更新内存内容。更新完成后，内存页变成脏页，就回到了第一种情况的状态。
+
+
+
 
 
 
@@ -602,6 +611,8 @@ mysql> insert into t values(30, 10, 30);
 ## QPS 突增问题
 有时候由于业务突然出现高峰，或者应用程序bug，导致某个语句的QPS突然暴涨，也可能导致MySQL压力过大，影响服务。
 
+
+
 # 23 MySQL 是怎么保证数据不丢的
 
 
@@ -615,11 +626,64 @@ mysql> insert into t values(30, 10, 30);
 
 
 
-事务提交的时候，执行器把binlog 
+事务提交的时候，执行器把binlog cache里的完整事务写入到binlog中，并清空binlog cache
+
+{% asset_img 23-binlog写盘状态.jpg 23-binlog写盘状态 %}
+
+* 每个线程有自己binlog cache，但是共用一份binlog文件
+* 图中的 write，指的就是指把日志写入到文件系统的 page cache，并没有把数据持久化到磁盘，所以速度比较快。
+* 图中的 fsync，才是将数据持久化到磁盘的操作。一般情况下，我们认为 fsync 才占磁盘的 IOPS。
 
 
 
+write 和 fsync 的时机，是由参数 sync_binlog 控制的：
 
+1. sync_binlog=0 的时候，表示每次提交事务都只 write，不 fsync；
+2. sync_binlog=1 的时候，表示每次提交事务都会执行 fsync；
+3. sync_binlog=N(N>1) 的时候，表示每次提交事务都 write，但累积 N 个事务后才 fsync。
+
+
+
+## redo log的写入机制
+
+事务还没提交，redo log buffer中的部分日志也有可能被持久化到磁盘。
+
+
+
+{% asset_img 23-redo log存储状态.jpg 23-redo log存储状态 %}
+
+1. 存在 redo log buffer 中，物理上是在 MySQL 进程内存中，就是图中的红色部分；
+2. 写到磁盘 (write)，但是没有持久化（fsync)，物理上是在文件系统的 page cache 里面，也就是图中的黄色部分；
+3. 持久化到磁盘，对应的是 hard disk，也就是图中的绿色部分。
+
+
+
+InnoDB有一个后台线程，每隔1秒，就会把redo log buffer中的日志，调用write写到文件系统的page cache，然后调用fsync持久化到磁盘。
+
+
+
+实际上，除了后台线程每秒一次的轮询操作外，还有两种场景会让一个没有提交的事务的 redo log 写入到磁盘中。
+
+* **redo log buffer 占用的空间即将达到 innodb_log_buffer_size 一半的时候，后台线程会主动写盘。**注意，由于这个事务并没有提交，所以这个写盘动作只是 write，而没有调用 fsync，也就是只留在了文件系统的 page cache。
+* **并行的事务提交的时候，顺带将这个事务的 redo log buffer 持久化到磁盘。**假设一个事务 A 执行到一半，已经写了一些 redo log 到 buffer 中，这时候有另外一个线程的事务 B 提交，如果 innodb_flush_log_at_trx_commit 设置的是 1，那么按照这个参数的逻辑，事务 B 要把 redo log buffer 里的日志全部持久化到磁盘。这时候，就会带上事务 A 在 redo log buffer 里的日志一起持久化到磁盘。
+
+
+
+为了控制 redo log 的写入策略，InnoDB 提供了 innodb_flush_log_at_trx_commit 参数，它有三种可能取值：
+
+1. 设置为 0 的时候，表示每次事务提交时都只是把 redo log 留在 redo log buffer 中 ;
+2. 设置为 1 的时候，表示每次事务提交时都将 redo log 直接持久化到磁盘；
+3. 设置为 2 的时候，表示每次事务提交时都只是把 redo log 写到 page cache。
+
+
+
+通常我们说MySQL的“双1”配置，指的就是sync_binlog和innodb_flush_log_at_trx_commit都设置成1。也就是说一个事务完整提交前，需要等待两次刷盘，一次是redo log（prepare阶段），一次是binlog
+
+
+
+## 组提交
+
+日志逻辑序列号（log sequence number, LSN）是单调递增的，用来对应redo log的一个个写入点。每次写入长度为length
 
 
 
