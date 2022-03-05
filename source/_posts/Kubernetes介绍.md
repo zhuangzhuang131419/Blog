@@ -536,17 +536,159 @@ spec:
 
 
 
+
+
+
+
+### 创建一个ReplicationController
+
 ```bash
 $ kubectl create -f kubia-rc.yaml
 ```
 
 
 
+```yaml
+apiVersion: v1
+kind: ReplicationController
+metadata:
+	# ReplicationController的名字
+  name: kubia
+spec:
+  replicas: 3
+  selector:
+  	# pod选择器决定了RC的操作对象
+    app: kubia
+  # 创建新pod所用的pod模板
+  template:
+    metadata:
+      labels:
+        app: kubia
+    spec:
+      containers:
+      - name: kubia
+        image: luksa/kubia
+        ports:
+        - containerPort: 8080
+```
+
+
+
+
+
+### 将pod移入或移出ReplicationController的作用域
+
+
+
+由ReplicationController创建的pod并不是绑定到ReplicationController。在任何时刻，ReplicationController管理与标签选择器匹配的pod。通过更改pod的标签，可以将它从ReplicationController的作用域中添加或删除。
+
+
+
+当更改pod的标签时，ReplicationController发现一个pod丢失了，并启动一个新的pod替换它。
+
+
+
+如果不是更改某一个pod的标签而是修改ReplicationController的标签选择器，会让所有的pod脱离ReplicationController的管理，导致它创建三个新的pod。
+
+
+
+### 修改pod模板
+
+只会影响之后的pod，并不会影响已经产生的pod
+
+```bash
+$ kubectl edit rc kubia
+```
+
+
+
+
+
+### 水平缩放pod
+
+1. 可以通过编辑ReplicationController中的`spec.replicas`的值
+2. 可以通过```kubectl scale```命令
+
+
+
+### 删除一个ReplicationController
+
+当通过```kubectl delete```删除ReplicationController时，pod也会被删除。可以通过给命令增加```--cascade=false```选项来保持pod的运行。
+
+
+
+
+
+## 使用ReplicaSet而不是ReplicationController
+
+单个 ReplicationController 无法将 pod 与标签 env=production 和 env = devel 同时匹配。 它只能匹配带有 env = devel 标签的 pod 或带有 env = devel 标签的 pod 。 但是 一 个 ReplicaSet 可以匹配两组 pod 并将它们视为一个大组。
+
+
+
+### 定义ReplicaSet
+
+```yaml
+apiVersion: apps/v1beta2
+kind: ReplicaSet
+metadata:
+  name: kubia
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: kubia
+  # 该模板与ReplicationController中的相同
+  template:
+    metadata:
+      labels:
+        app: kubia
+    spec:
+      containers:
+
+   - name: kubia
+     image: luksa/kubia
+```
+
 
 
 ## 运行执行单个任务的pod
 
-当遇到只想运行完成工作后就终止任务的情况
+当遇到只想运行完成工作后就终止任务的情况。ReplicationController，ReplicaSet和DaemonSet会持续运行任务，永远达不到完成态。
+
+
+
+### Job资源
+
+> 它允许你运行一种pod，该pod在内部进程成功结束时，不重启容器。一旦任务完成，pod就被认为处于完成状态。
+
+
+
+在发生节点故障时，该节点上由Job管理的pod将按照ReplicaSet的pod的方式，重新安排到其他节点。
+
+
+
+### 定义Job资源
+
+```yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: batch-job
+spec:
+  template:
+    metadata:
+      labels:
+        app: batch-job
+    spec:
+    	# Job不能使用Always为默认的重新启动策略
+      restartPolicy: OnFailure
+      containers:
+
+   - name: main
+     image: luksa/batch-job
+```
+
+
 
 
 
@@ -580,6 +722,91 @@ pod需要一中寻找其他pod的方法来使用其他pod提供的服务。在�
 
 可以使用标签的方式来指定哪些pod属于服务，哪些pod不属于。
 
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: kubia
+spec:
+  ports:
+  - port: 80
+    targetPort: 8080
+  # 具有app=kubia标签的pod都属于该服务
+  selector:
+    app: kubia
+```
+
+
+
+> 配置服务上的会话亲和性
+
+如果希望特定客户端产生的所有请求每次都指向同一个pod，可以设置服务的sessionAffinity为ClientIP
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: kubia
+spec:
+  sessionAffinity: ClientIP
+  ports:
+  - port: 80
+    targetPort: 8080
+  selector:
+    app: kubia
+```
+
+
+
+> 同一个服务暴露多个端口
+
+创建的服务可以暴露一个端口，也可以暴露多个端口。
+
+```yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: kubia
+spec:
+  ports:
+  - name: http
+    port: 80
+    targetPort: 8080
+  - name: https
+    port: 443
+    targetPort: 8443
+  selector:
+    app: kubia
+```
+
+
+
+
+
+如果创建了不包含pod选择器的服务，Kubernetes将不会创建Endpoint资源。这样就需要创建Endpoint资源来指定该服务的endpoint列表。
+
+
+
+
+
+## 将服务暴露给外部客户端
+
+
+
+* 将服务的类型设置成NodePort，每个集群节点在节点本身上打开一个端口
+* 将服务的类型设置成LoadBalance，这使得服务可以通过一个专用的负载均衡器来访问
+* 创建一个Ingress资源，通过一个IP地址公开多个服务
+
+
+
+### 使用NodePort类型的服务
+
+创建一个服务并将其类型设置为NodePort
+
+
+
+
+
 
 
 
@@ -612,6 +839,34 @@ pod可能需要时间来加载配置或数据，或者可能需要执行预热�
 
 
 
+## 连接集群外部的服务
+
+
+
+### endpoint
+
+```bash
+$ kubectl describe svc kubia
+Name:              kubia
+Namespace:         default
+Labels:            <none>
+Annotations:       <none>
+Selector:          app=kubia
+Type:              ClusterIP
+IP:                10.105.246.179
+Port:              <unset>  80/TCP
+TargetPort:        8080/TCP
+Endpoints:         10.1.2.24:8080,10.1.2.25:8080,10.1.2.26:8080
+Session Affinity:  None
+Events:            <none>
+```
+
+
+
+服务并不是和 pod 直接相连的。有一个Endpoint资源介于两者之间。Endpoint资源就是暴露一个服务的IP地址和端口的列表。当客户端连接到服务时，服务代理选择这些IP和端口对中的一个，并将传入连接重定向到在该位置监听的服务器。
+
+
+
 
 
 
@@ -631,6 +886,48 @@ pod类似逻辑主机，在逻辑主机中运行的进程共享诸如CPU、RAM�
 > volume是pod的一个组成部分，因此像容器一样在pod的规范中就定义了。它不是独立的Kubernetes对象，也不能单独创建或删除。
 
 在pod启动时创建卷，并在删除pod时销毁卷。因此，在容器重新启动期间，卷的内容将保持不变，在重新启动容器之后，新容器可以识别前一个容器写入卷的所有文件。
+
+
+
+
+
+### 介绍持久卷和持久卷声明
+
+PersistentVolume（持久卷，PV）
+
+{% asset_img 持久卷和持久卷声明的关系.jpg 持久卷和持久卷声明的关系%}
+
+当集群用户需要在其pod中使用持久化存储时，他们首先创建持久卷声明（PersistentVolumeClaim, PVC）清单，指定所需要的最低容量要求和访问模式，然后用户将持久卷声明清单提交给Kubernetes API服务器，Kubernetes 将找到可匹配的持久卷并将其绑定到持久卷声明。
+
+
+
+**PV不属于任何namespace，而pod和PVC有各自的namespace**
+
+
+
+* RWO-ReadWriteOnce-仅允许单个节点挂载读写
+* ROX-ReadOnlyMany-允许多个节点挂载只读
+* RWX-ReadWriteMany-允许多个节点挂载读写这个卷
+
+
+
+
+
+# ConfigMap和Secret：配置应用程序
+
+
+
+## 利用ConfigMap解耦配置
+
+
+
+### ConfigMap介绍
+
+Kubernetes允许将配置选项分离到单独的资源对象ConfigMap中，本质上就是一个键/值对映射。
+
+pod通过环境变量与ConfigMap卷使用ConfigMap
+
+
 
 
 
@@ -660,6 +957,19 @@ pod类似逻辑主机，在逻辑主机中运行的进程共享诸如CPU、RAM�
 * pod运行节点的名称
 * pod运行所归属的服务账户的名称
 * 每个容器请求的CPU和内存的使用量
+* 每个容器可以使用的CPU和内存限制
+* pod的标签
+* pod的注解
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -705,7 +1015,31 @@ pod类似逻辑主机，在逻辑主机中运行的进程共享诸如CPU、RAM�
 
 ## 使用Deployment声明式地升级应用
 
+
+
+Deployment 由 ReplicaSet 组成，并由它接管 Deployment 的 pod
+
+
+
 当创建一个Deployment时，ReplicaSet资源也会随之创建
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
